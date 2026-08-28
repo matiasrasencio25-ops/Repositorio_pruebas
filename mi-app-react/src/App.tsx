@@ -28,7 +28,22 @@ function App() {
   const [showApiStatus, setShowApiStatus] = useState(true)
   const [apiResponse, setApiResponse] = useState('Conectando con el backend...')
   const [usuarios, setUsuarios] = useState<{ id: number; nombre: string; email: string }[]>([])
+  const [usuariosLoading, setUsuariosLoading] = useState(false)
   const [usuariosError, setUsuariosError] = useState('')
+  const [userSearch, setUserSearch] = useState('')
+  const [userFilter, setUserFilter] = useState<'todos' | 'nombre' | 'email'>('todos')
+  const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
+  const [deleteUserError, setDeleteUserError] = useState('')
+  const [editingUser, setEditingUser] = useState<{ id: number; nombre: string; email: string } | null>(null)
+  const [editUserName, setEditUserName] = useState('')
+  const [editUserEmail, setEditUserEmail] = useState('')
+  const [editUserMessage, setEditUserMessage] = useState('')
+  const [editUserLoading, setEditUserLoading] = useState(false)
+  const [showAddUser, setShowAddUser] = useState(false)
+  const [newUserName, setNewUserName] = useState('')
+  const [newUserEmail, setNewUserEmail] = useState('')
+  const [addUserMessage, setAddUserMessage] = useState('')
+  const [addUserLoading, setAddUserLoading] = useState(false)
   const [selectedGame, setSelectedGame] = useState<typeof topGames[number] | null>(null)
   const [page, setPage] = useState<'inicio' | 'directorio' | 'juegos'>(() => window.location.pathname === '/directorio' ? 'directorio' : window.location.pathname === '/juegos' ? 'juegos' : 'inicio')
 
@@ -67,16 +82,28 @@ function App() {
       .then(setApiResponse)
       .catch(() => setApiResponse('No se pudo conectar con el backend'))
 
-    fetch('http://localhost:3000/usuarios')
+    loadUsuarios()
+  }, [token])
+
+  async function loadUsuarios() {
+    setUsuariosLoading(true)
+    setUsuariosError('')
+
+    try {
+      const response = await fetch('http://localhost:3000/usuarios')
       .then((response) => {
         if (!response.ok) {
           throw new Error('No se pudieron cargar los usuarios')
         }
         return response.json()
       })
-      .then(setUsuarios)
-      .catch(() => setUsuariosError('No se pudieron cargar los usuarios desde PostgreSQL'))
-  }, [token])
+      setUsuarios(response)
+    } catch {
+      setUsuariosError('No se pudieron cargar los usuarios desde PostgreSQL')
+    } finally {
+      setUsuariosLoading(false)
+    }
+  }
 
   async function handleAuthSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -134,6 +161,84 @@ function App() {
     setPage(nextPage)
   }
 
+  async function handleAddUser(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setAddUserMessage('')
+    setAddUserLoading(true)
+
+    try {
+      const response = await fetch('http://localhost:3000/usuarios', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nombre: newUserName, email: newUserEmail }),
+      })
+      const responseText = await response.text()
+      let data: { id?: number; nombre?: string; email?: string; error?: string }
+      try {
+        data = JSON.parse(responseText)
+      } catch {
+        throw new Error('El backend no está disponible o la ruta /usuarios no existe')
+      }
+      if (!response.ok) throw new Error(data.error || 'No se pudo agregar el usuario')
+
+      setUsuarios((currentUsers) => [...currentUsers, data as { id: number; nombre: string; email: string }])
+      setNewUserName('')
+      setNewUserEmail('')
+      setAddUserMessage(`Usuario agregado con ID ${data.id}`)
+    } catch (error) {
+      setAddUserMessage(error instanceof Error ? error.message : 'Ocurrió un error')
+    } finally {
+      setAddUserLoading(false)
+    }
+  }
+
+  async function handleDeleteUser(usuario: { id: number; nombre: string }) {
+    if (!window.confirm(`¿Eliminar a ${usuario.nombre}?`)) return
+
+    setDeleteUserError('')
+    setDeletingUserId(usuario.id)
+    try {
+      const response = await fetch(`http://localhost:3000/usuarios/${usuario.id}`, { method: 'DELETE' })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'No se pudo eliminar el usuario')
+      setUsuarios((currentUsers) => currentUsers.filter((currentUser) => currentUser.id !== usuario.id))
+    } catch (error) {
+      setDeleteUserError(error instanceof Error ? error.message : 'No se pudo eliminar el usuario')
+    } finally {
+      setDeletingUserId(null)
+    }
+  }
+
+  function openEditUser(usuario: { id: number; nombre: string; email: string }) {
+    setEditingUser(usuario)
+    setEditUserName(usuario.nombre)
+    setEditUserEmail(usuario.email)
+    setEditUserMessage('')
+  }
+
+  async function handleEditUser(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!editingUser) return
+    setEditUserMessage('')
+    setEditUserLoading(true)
+
+    try {
+      const response = await fetch(`http://localhost:3000/usuarios/${editingUser.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nombre: editUserName, email: editUserEmail }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'No se pudo actualizar el usuario')
+      setUsuarios((currentUsers) => currentUsers.map((usuario) => usuario.id === data.id ? data : usuario))
+      setEditingUser(null)
+    } catch (error) {
+      setEditUserMessage(error instanceof Error ? error.message : 'No se pudo actualizar el usuario')
+    } finally {
+      setEditUserLoading(false)
+    }
+  }
+
   if (!token) {
     return (
       <main className="auth-page">
@@ -168,6 +273,14 @@ function App() {
 
   const isDirectory = page === 'directorio'
   const isGames = page === 'juegos'
+  const filteredUsers = usuarios.filter((usuario) => {
+    const search = userSearch.trim().toLowerCase()
+    if (!search) return true
+    const value = userFilter === 'email' ? usuario.email : userFilter === 'nombre' ? usuario.nombre : `${usuario.nombre} ${usuario.email}`
+    return value.toLowerCase().includes(search)
+  })
+  const emailDomains = new Set(usuarios.map((usuario) => usuario.email.split('@')[1]?.toLowerCase()).filter(Boolean)).size
+  const recentUsers = [...usuarios].sort((first, second) => second.id - first.id).slice(0, 4)
 
   return (
     <main className={`app-shell${darkMode ? ' dark-mode' : ''}${compactMode ? ' compact-mode' : ''}`}>
@@ -205,6 +318,24 @@ function App() {
         </div>}
       </section>
 
+      {!isDirectory && !isGames && <section className="dashboard" aria-labelledby="dashboard-title">
+        <div className="section-heading">
+          <div><p className="eyebrow accent-label">RESUMEN OPERATIVO</p><h2 id="dashboard-title">Vista general</h2></div>
+          <span className="dashboard-date">Actualizado ahora</span>
+        </div>
+        <div className="dashboard-stats">
+          <article className="stat-card stat-card-primary"><span className="stat-label">Usuarios registrados</span><strong>{usuariosLoading ? '—' : usuarios.length}</strong><small>Registros disponibles</small></article>
+          <article className="stat-card"><span className="stat-label">Dominios de correo</span><strong>{usuariosLoading ? '—' : emailDomains}</strong><small>Dominios representados</small></article>
+          <article className="stat-card"><span className="stat-label">Estado del sistema</span><strong className="system-status"><span className={`status-dot${apiResponse.startsWith('No se') ? ' offline' : ''}`} />{apiResponse.startsWith('No se') ? 'Revisar' : 'Activo'}</strong><small>Conexión con el backend</small></article>
+        </div>
+        <div className="dashboard-lower">
+          <div className="recent-users"><div className="subsection-heading"><div><p className="eyebrow">ACTIVIDAD RECIENTE</p><h3>Últimos usuarios agregados</h3></div><button className="text-button" type="button" onClick={() => navigateTo('directorio')}>Ver todos →</button></div>
+            {usuariosLoading ? <p className="feedback loading"><span className="loading-spinner" />Cargando actividad...</p> : recentUsers.length === 0 ? <p className="feedback">Todavía no hay usuarios.</p> : <ul>{recentUsers.map((usuario) => <li key={usuario.id}><span className="recent-avatar">{usuario.nombre.charAt(0).toUpperCase()}</span><span><strong>{usuario.nombre}</strong><small>{usuario.email}</small></span><b>#{String(usuario.id).padStart(2, '0')}</b></li>)}</ul>}
+          </div>
+          <div className="dashboard-quick"><p className="eyebrow">ACCESOS RÁPIDOS</p><h3>Continúa trabajando</h3><button className="page-button" type="button" onClick={() => navigateTo('directorio')}>Gestionar usuarios →</button><button className="page-button secondary" type="button" onClick={() => navigateTo('juegos')}>Explorar juegos →</button></div>
+        </div>
+      </section>}
+
       {isGames ? (
         <section className="games-section" aria-labelledby="games-title">
           <div className="section-heading"><div><p className="eyebrow">RANKING METACRITIC</p><h2 id="games-title">Top 10 mejor valorados</h2></div><span className="count-badge">10 títulos</span></div>
@@ -223,24 +354,37 @@ function App() {
             <p className="eyebrow">DIRECTORIO</p>
             <h2 id="usuarios-title">Usuarios registrados</h2>
           </div>
-          <span className="count-badge">{usuarios.length} registros</span>
+          <div className="section-actions">
+            <button className="page-button add-user-button" type="button" onClick={() => { setShowAddUser(true); setAddUserMessage('') }}>+ Agregar usuario</button>
+            <span className="count-badge">{usuarios.length} registros</span>
+          </div>
         </div>
-        {usuariosError ? (
-          <p className="feedback error">{usuariosError}</p>
+        <div className="user-tools">
+          <label className="search-field">Buscar usuario<input type="search" value={userSearch} onChange={(event) => setUserSearch(event.target.value)} placeholder="Nombre o correo electrónico" /></label>
+          <label className="filter-field">Buscar por<select value={userFilter} onChange={(event) => setUserFilter(event.target.value as typeof userFilter)}><option value="todos">Todos</option><option value="nombre">Nombre</option><option value="email">Correo electrónico</option></select></label>
+        </div>
+        {deleteUserError && <p className="feedback error">{deleteUserError}</p>}
+        {usuariosLoading ? (
+          <p className="feedback loading" role="status"><span className="loading-spinner" />Cargando usuarios...</p>
+        ) : usuariosError ? (
+          <div className="feedback error"><p>{usuariosError}</p><button className="retry-button" type="button" onClick={loadUsuarios}>Reintentar</button></div>
         ) : usuarios.length === 0 ? (
           <p className="feedback">No hay usuarios registrados.</p>
+        ) : filteredUsers.length === 0 ? (
+          <p className="feedback">No hay usuarios que coincidan con la búsqueda.</p>
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>ID</th><th>Nombre</th><th>Correo electrónico</th></tr>
+                <tr><th>ID</th><th>Nombre</th><th>Correo electrónico</th><th>Acciones</th></tr>
               </thead>
               <tbody>
-                {usuarios.map((usuario) => (
+                {filteredUsers.map((usuario) => (
                   <tr key={usuario.id}>
                     <td><span className="id-chip">{String(usuario.id).padStart(2, '0')}</span></td>
                     <td className="user-name">{usuario.nombre}</td>
                     <td>{usuario.email}</td>
+                    <td className="row-actions"><button className="edit-button" type="button" onClick={() => openEditUser(usuario)} disabled={deletingUserId === usuario.id}>Editar</button><button className="delete-button" type="button" onClick={() => handleDeleteUser(usuario)} disabled={deletingUserId === usuario.id}>{deletingUserId === usuario.id ? 'Eliminando...' : 'Eliminar'}</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -268,6 +412,32 @@ function App() {
           <div className="setting-row"><div><strong>Estado de la API</strong><small>Muestra la conexión del backend</small></div><button className={`toggle${showApiStatus ? ' is-on' : ''}`} type="button" onClick={() => setShowApiStatus((visible) => !visible)} aria-pressed={showApiStatus}><span /></button></div>
           <div className="settings-footer">Los cambios se guardan automáticamente en este dispositivo.</div>
         </aside>
+      </div>}
+
+      {showAddUser && <div className="settings-backdrop" onClick={() => setShowAddUser(false)}>
+        <section className="add-user-panel" onClick={(event) => event.stopPropagation()} aria-labelledby="add-user-title">
+          <div className="settings-header"><div><p className="eyebrow">DIRECTORIO</p><h2 id="add-user-title">Agregar usuario</h2></div><button className="close-button" type="button" onClick={() => setShowAddUser(false)} aria-label="Cerrar formulario">×</button></div>
+          <p className="settings-description">El ID progresivo se asignará automáticamente.</p>
+          <form className="add-user-form" onSubmit={handleAddUser}>
+            <label>Nombre<input value={newUserName} onChange={(event) => setNewUserName(event.target.value)} required minLength={2} maxLength={100} pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü]+( [A-Za-zÁÉÍÓÚáéíóúÑñÜü]+)*" title="Usa solo letras y espacios" /></label>
+            <label>Correo electrónico<input type="email" value={newUserEmail} onChange={(event) => setNewUserEmail(event.target.value)} required minLength={5} maxLength={150} /></label>
+            {addUserMessage && <p className={`feedback${addUserMessage.startsWith('Usuario agregado') ? '' : ' error'}`}>{addUserMessage}</p>}
+            <button className="page-button" type="submit" disabled={addUserLoading}>{addUserLoading ? <><span className="loading-spinner" />Guardando...</> : 'Guardar usuario'}</button>
+          </form>
+        </section>
+      </div>}
+
+      {editingUser && <div className="settings-backdrop" onClick={() => setEditingUser(null)}>
+        <section className="add-user-panel" onClick={(event) => event.stopPropagation()} aria-labelledby="edit-user-title">
+          <div className="settings-header"><div><p className="eyebrow">DIRECTORIO · ID {editingUser.id}</p><h2 id="edit-user-title">Editar usuario</h2></div><button className="close-button" type="button" onClick={() => setEditingUser(null)} aria-label="Cerrar formulario">×</button></div>
+          <p className="settings-description">Actualiza los datos del usuario seleccionado.</p>
+          <form className="add-user-form" onSubmit={handleEditUser}>
+            <label>Nombre<input value={editUserName} onChange={(event) => setEditUserName(event.target.value)} required minLength={2} maxLength={100} pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü]+( [A-Za-zÁÉÍÓÚáéíóúÑñÜü]+)*" title="Usa solo letras y espacios" /></label>
+            <label>Correo electrónico<input type="email" value={editUserEmail} onChange={(event) => setEditUserEmail(event.target.value)} required minLength={5} maxLength={150} /></label>
+            {editUserMessage && <p className="feedback error">{editUserMessage}</p>}
+            <button className="page-button" type="submit" disabled={editUserLoading}>{editUserLoading ? <><span className="loading-spinner" />Guardando...</> : 'Guardar cambios'}</button>
+          </form>
+        </section>
       </div>}
     </main>
   )
